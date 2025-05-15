@@ -1,0 +1,10 @@
+{
+    "name": "BlueOS-FoxGlove",
+    "description": "MAVLink to Foxglove bridge",
+    "icon": "mdi-boxing-glove",
+    "company": "patrickelectric",
+    "version": "0.0.0",
+    "new_page": false,
+    "webpage": "https://github.com/patrickelectric/blueos-foxglove",
+    "api": "/v1.0/docs"
+}

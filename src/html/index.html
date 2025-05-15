@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Foxglove Bridge</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            text-align: center;
+            background-color: white;
+        }
+        .container {
+            margin-top: 50px;
+        }
+        .link-button {
+            display: inline-block;
+            padding: 15px 30px;
+            background-color: #4CAF50;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 18px;
+            margin: 20px 0;
+        }
+        .link-button:hover {
+            background-color: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Foxglove Bridge</h1>
+        <p>Click the button below to open Foxglove Studio with the current connection:</p>
+        <a id="foxgloveLink" class="link-button" href="#" target="_blank">Open Foxglove Studio</a>
+    </div>
+    <script>
+        // Update the link with the current hostname
+        const hostname = window.location.hostname;
+        const link = document.getElementById('foxgloveLink');
+        link.href = `https://app.foxglove.dev/~/view?ds=foxglove-websocket&ds.url=ws://${hostname}:8765`;
+    </script>
+</body>
+</html>
