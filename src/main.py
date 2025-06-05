@@ -5,8 +5,8 @@ import os
 from aiohttp import web
 import foxglove
 from foxglove import Channel
-from foxglove.channels import LocationFixChannel
-from foxglove.schemas import LocationFix
+from foxglove.channels import LocationFixChannel, LogChannel
+from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp
 from foxglove.websocket import Capability
 import socket
 import zenoh
@@ -82,7 +82,7 @@ async def main():
     )
     logger.info("Foxglove server started at ws://0.0.0.0:8765")
 
-    def message_callback(sample: Sample):
+    def mavlink_callback(sample: Sample):
         try:
             payload_bytes = bytes(sample.payload)
             try:
@@ -123,7 +123,55 @@ async def main():
             logger.error(f"Error processing message: {e}")
             pass
 
-    session.declare_subscriber("mavlink/1/1/**", message_callback)
+    service_channels = {}
+    def services_callback(sample: Sample):
+        payload_bytes = bytes(sample.payload)
+        try:
+            data = json.loads(payload_bytes.decode('utf-8'))
+        except json.JSONDecodeError:
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        if not "message" in data:
+            return
+
+        topic = str(sample.key_expr)
+
+        if topic not in service_channels:
+            service_channels[topic] = LogChannel(topic)
+
+        # Create a switch case for each number and log the message
+        match data["level"]:
+            case 0:
+                level = LogLevel.Unknown
+            case 1:
+                level = LogLevel.Debug
+            case 2:
+                level = LogLevel.Info
+            case 3:
+                level = LogLevel.Warning
+            case 4:
+                level = LogLevel.Error
+            case 5:
+                level = LogLevel.Fatal
+            case _:
+                level = LogLevel.Unknown
+
+        log_msg = Log(
+            level=level,
+            message=data["message"],
+            name=data["name"],
+            file=data["file"],
+            line=data["line"],
+            timestamp=Timestamp(sec=int(data["timestamp"]["sec"]), nsec=int(data["timestamp"]["nsec"])),
+        )
+        service_channels[topic].log(log_msg)
+
+
+    session.declare_subscriber("mavlink/1/1/**", mavlink_callback)
+    session.declare_subscriber("services/**/log", services_callback)
 
     try:
         while True:
