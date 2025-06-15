@@ -37,7 +37,10 @@
     </div>
     <script>
         // Update the link with the current hostname
-        const hostname = window.location.hostname;
+        let hostname = window.location.hostname;
+        if (hostname === "0.0.0.0") {
+            hostname = "127.0.0.1";
+        }
         const link = document.getElementById('foxgloveLink');
         link.href = `https://app.foxglove.dev/~/view?ds=foxglove-websocket&ds.url=ws://${hostname}:8765`;
     </script>
