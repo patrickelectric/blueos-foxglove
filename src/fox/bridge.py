@@ -1,6 +1,7 @@
 import json
 import logging
 import foxglove
+import re
 from foxglove import Channel
 from foxglove.channels import LocationFixChannel, LogChannel
 from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp
@@ -34,11 +35,26 @@ class Bridge:
         conf.insert_json5("mode", '"peer"')
         self.session = zenoh.open(conf)
 
-        # Set up subscribers
-        self.session.declare_subscriber("mavlink/1/1/**", self.mavlink_callback)
-        self.session.declare_subscriber("services/**/log", self.services_callback)
+        # Set up single subscriber for all topics
+        self.session.declare_subscriber("**", self.message_callback)
 
-    def mavlink_callback(self, sample: Sample):
+    def message_callback(self, sample: Sample):
+        try:
+            topic = str(sample.key_expr)
+
+            # Match mavlink topics
+            if re.match(r"mavlink/1/1/.*", topic):
+                self._handle_mavlink_message(sample)
+            # Match service log topics
+            elif re.match(r"services/.*/log", topic):
+                self._handle_service_log(sample)
+            else:
+                logger.info(f"Unknown topic: {topic}")
+
+        except Exception as e:
+            logger.error(f"Error processing message: {e}")
+
+    def _handle_mavlink_message(self, sample: Sample):
         try:
             payload_bytes = bytes(sample.payload)
             try:
@@ -46,15 +62,11 @@ class Bridge:
             except json.JSONDecodeError:
                 return
 
-            if not isinstance(data, dict):
-                return
-
-            if not "message" in data:
+            if not isinstance(data, dict) or "message" not in data:
                 return
 
             msg = data["message"]
-
-            if not "type" in msg:
+            if "type" not in msg:
                 return
 
             msg_type = msg["type"]
@@ -76,49 +88,53 @@ class Bridge:
                 self.location_fix_channel.log(location_fix)
 
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error processing mavlink message: {e}")
 
-    def services_callback(self, sample: Sample):
-        payload_bytes = bytes(sample.payload)
+    def _handle_service_log(self, sample: Sample):
         try:
-            data = json.loads(payload_bytes.decode('utf-8'))
-        except json.JSONDecodeError:
-            return
+            payload_bytes = bytes(sample.payload)
+            try:
+                data = json.loads(payload_bytes.decode('utf-8'))
+            except json.JSONDecodeError:
+                return
 
-        if not isinstance(data, dict):
-            return
+            if not isinstance(data, dict):
+                return
 
-        topic = str(sample.key_expr)
+            topic = str(sample.key_expr)
 
-        if topic not in self.service_channels:
-            self.service_channels[topic] = LogChannel(topic)
+            if topic not in self.service_channels:
+                self.service_channels[topic] = LogChannel(topic)
 
-        # Create a switch case for each number and log the message
-        match data["level"]:
-            case 0:
-                level = LogLevel.Unknown
-            case 1:
-                level = LogLevel.Debug
-            case 2:
-                level = LogLevel.Info
-            case 3:
-                level = LogLevel.Warning
-            case 4:
-                level = LogLevel.Error
-            case 5:
-                level = LogLevel.Fatal
-            case _:
-                level = LogLevel.Unknown
+            # Create a switch case for each number and log the message
+            match data["level"]:
+                case 0:
+                    level = LogLevel.Unknown
+                case 1:
+                    level = LogLevel.Debug
+                case 2:
+                    level = LogLevel.Info
+                case 3:
+                    level = LogLevel.Warning
+                case 4:
+                    level = LogLevel.Error
+                case 5:
+                    level = LogLevel.Fatal
+                case _:
+                    level = LogLevel.Unknown
 
-        log_msg = Log(
-            level=level,
-            message=data["message"],
-            name=data["name"],
-            file=data["file"],
-            line=data["line"],
-            timestamp=Timestamp(sec=int(data["timestamp"]["sec"]), nsec=int(data["timestamp"]["nsec"])),
-        )
-        self.service_channels[topic].log(log_msg)
+            log_msg = Log(
+                level=level,
+                message=data["message"],
+                name=data["name"],
+                file=data["file"],
+                line=data["line"],
+                timestamp=Timestamp(sec=int(data["timestamp"]["sec"]), nsec=int(data["timestamp"]["nsec"])),
+            )
+            self.service_channels[topic].log(log_msg)
+
+        except Exception as e:
+            logger.error(f"Error processing service log: {e}")
 
     def cleanup(self):
         if self.session:
