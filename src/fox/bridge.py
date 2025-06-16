@@ -2,11 +2,13 @@ import json
 import logging
 import foxglove
 import re
-from foxglove import Channel
-from foxglove.channels import LocationFixChannel, LogChannel
-from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp
-from foxglove.websocket import Capability
 import zenoh
+from foxglove import Channel
+from foxglove.channels import CompressedVideoChannel,LocationFixChannel, LogChannel
+from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp, CompressedVideo
+from foxglove.websocket import Capability
+from genson import SchemaBuilder
+from typing import Dict, Any
 from zenoh import Session, Sample
 
 # Configure logging
@@ -17,6 +19,9 @@ class Bridge:
         self.location_fix_channel = LocationFixChannel("vehicle/position")
         self.mavlink_channels = {}
         self.service_channels = {}
+        self.unknown_channels: Dict[str, Channel] = {}
+        self.schema_builders: Dict[str, SchemaBuilder] = {}
+        self.video_channels: Dict[str, CompressedVideoChannel] = {}
         self.session = None
         self.server = None
 
@@ -48,11 +53,103 @@ class Bridge:
             # Match service log topics
             elif re.match(r"services/.*/log", topic):
                 self._handle_service_log(sample)
+            elif re.match(r"video/.*", topic):
+                self._handle_video_message(sample)
             else:
-                logger.info(f"Unknown topic: {topic}")
+                self._handle_unknown_message(sample)
 
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+
+    def _handle_unknown_message(self, sample: Sample):
+        try:
+            topic = str(sample.key_expr)
+            # the schema will change all the time, and we don't need to log it
+            if topic == "mavlink/out":
+                return
+
+            payload_bytes = bytes(sample.payload)
+
+            try:
+                data = json.loads(payload_bytes.decode('utf-8'))
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to decode JSON for topic {topic}")
+                return
+
+            if not isinstance(data, dict):
+                return
+
+            # Ignore nested mavlink messages that are not complete
+            if "mavlink/" in topic and "message" not in data:
+                return
+
+            # Initialize schema builder for this topic if it doesn't exist
+            if topic not in self.schema_builders:
+                self.schema_builders[topic] = SchemaBuilder()
+                self.schema_builders[topic].add_object(data)
+                schema = self.schema_builders[topic].to_schema()
+
+                # Create a new channel with the generated schema
+                self.unknown_channels[topic] = Channel(
+                    topic,
+                    message_encoding="json",
+                    schema=schema
+                )
+                logger.info(f"Created new channel for topic {topic} with schema")
+            else:
+                # Add the new data to the schema builder
+                self.schema_builders[topic].add_object(data)
+                new_schema = self.schema_builders[topic].to_schema()
+
+                # Only create a new channel if the schema has changed
+                new_schema_str = json.dumps(new_schema)
+                old_schema_str = self.unknown_channels[topic].schema().data.decode('utf-8').replace("\'", "\"")
+                if new_schema_str != old_schema_str:
+                    logger.info(f"new schema: {new_schema_str}")
+                    logger.info(f"old schema: {old_schema_str}")
+                    self.unknown_channels[topic] = Channel(
+                        topic,
+                        message_encoding="json",
+                        schema=new_schema
+                    )
+                    logger.info(f"Updated channel for topic {topic} with new schema")
+
+            # Send the message
+            self.unknown_channels[topic].log(data)
+
+        except Exception as e:
+            logger.error(f"Error handling unknown message for topic {topic}: {e}")
+
+    def _handle_video_message(self, sample: Sample):
+        try:
+            topic = str(sample.key_expr)
+            payload_bytes = bytes(sample.payload)
+            data = json.loads(payload_bytes.decode('utf-8'))
+
+            # Create video channel if it doesn't exist
+            if topic not in self.video_channels:
+                self.video_channels[topic] = CompressedVideoChannel(topic)
+                logger.info(f"Created new video channel for topic {topic}")
+
+            # Extract video data from the message
+            if "data" not in data or "format" not in data:
+                logger.warning(f"Invalid video message format for topic {topic}")
+                return
+
+            # Create CompressedImage message
+            image_msg = CompressedVideo(
+                timestamp=Timestamp(sec=int(data.get("timestamp", {}).get("sec", 0)),
+                                  nsec=int(data.get("timestamp", {}).get("nsec", 0))),
+                frame_id=data.get("frame_id", "camera"),
+                data=bytes(data["data"]),
+                format=data["format"]
+            )
+
+            # Send the video message
+            self.video_channels[topic].log(image_msg)
+
+        except Exception as e:
+            logger.error(f"Error handling video message for topic {topic}: {e}")
 
     def _handle_mavlink_message(self, sample: Sample):
         try:
