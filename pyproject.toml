@@ -9,6 +9,7 @@ dependencies = [
     "eclipse-zenoh==1.3.4",
     "asyncio>=3.4.3",
     "aiohttp>=3.9.0",
+    "genson>=1.2.2",
 ]
 
 [build-system]
