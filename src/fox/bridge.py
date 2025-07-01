@@ -4,19 +4,21 @@ import foxglove
 import re
 import zenoh
 from foxglove import Channel
-from foxglove.channels import CompressedVideoChannel,LocationFixChannel, LogChannel
-from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp, CompressedVideo
+from foxglove.channels import CompressedVideoChannel,LocationFixChannel, LogChannel, PoseChannel, FrameTransformChannel
+from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp, CompressedVideo, Quaternion
 from foxglove.websocket import Capability
 from genson import SchemaBuilder
 from typing import Dict, Any
 from zenoh import Session, Sample
+from fox.posehandler import PoseHandler
 
 # Configure logging
 logger = logging.getLogger("foxglove_bridge")
-
 class Bridge:
     def __init__(self):
         self.location_fix_channel = LocationFixChannel("vehicle/position")
+        self.pose_channel = PoseChannel("vehicle/pose")
+        self.frame_transform_channel = FrameTransformChannel("vehicle/frame_transform")
         self.mavlink_channels = {}
         self.service_channels = {}
         self.unknown_channels: Dict[str, Channel] = {}
@@ -24,6 +26,7 @@ class Bridge:
         self.video_channels: Dict[str, CompressedVideoChannel] = {}
         self.session = None
         self.server = None
+        self.pose_handler = PoseHandler()
 
     async def start(self):
         # Start Foxglove server
@@ -38,7 +41,7 @@ class Bridge:
         # Initialize Zenoh session
         conf = zenoh.Config()
         conf.insert_json5("mode", json.dumps("client"))
-        conf.insert_json5("connect/endpoints", json.dumps(["tcp/127.0.0.1:7447"]))
+        conf.insert_json5("connect/endpoints", json.dumps(["tcp/192.168.8.126:7447"]))
         self.session = zenoh.open(conf)
 
         # Set up single subscriber for all topics
@@ -50,6 +53,8 @@ class Bridge:
 
             # Match mavlink topics
             if re.match(r"mavlink/1/1/.*", topic):
+                self._handle_mavlink_message(sample)
+            if re.match(r"mavlink/1/191/.*", topic):
                 self._handle_mavlink_message(sample)
             # Match service log topics
             elif re.match(r"services/.*/log", topic):
@@ -175,7 +180,6 @@ class Bridge:
 
             # Send message
             self.mavlink_channels[topic].log(data)
-
             if msg_type == "GLOBAL_POSITION_INT":
                 location_fix = LocationFix(
                     frame_id="map",
@@ -184,6 +188,32 @@ class Bridge:
                     altitude=msg["alt"] / 1000.0,  # Convert to meters
                 )
                 self.location_fix_channel.log(location_fix)
+            elif msg_type == "ATTITUDE":
+                self.pose_handler.attitude = msg
+                pose = self.pose_handler.get_pose()
+                if pose is not None:
+                    self.pose_channel.log(pose)
+
+            elif msg_type == "ATT_POS_MOCAP":
+                self.pose_handler.position = msg
+                self.pose_handler.quaternion = Quaternion(w=msg["q"][0], x=msg["q"][1], y=msg["q"][2], z=msg["q"][3])
+                pose = self.pose_handler.get_pose()
+                if pose is not None:
+                    self.pose_channel.log(pose)
+
+                frame_transform = self.pose_handler.get_frame_transform()
+                if frame_transform is not None:
+                    self.frame_transform_channel.log(frame_transform)
+
+            elif msg_type == "LOCAL_POSITION_NED":
+                self.pose_handler.position = msg
+                pose = self.pose_handler.get_pose()
+                if pose is not None:
+                    self.pose_channel.log(pose)
+                frame_transform = self.pose_handler.get_frame_transform()
+                if frame_transform is not None:
+                    self.frame_transform_channel.log(frame_transform)
+
 
         except Exception as e:
             logger.error(f"Error processing mavlink message: {e}")
