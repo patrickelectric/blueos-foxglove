@@ -39,6 +39,8 @@ class Bridge:
 
         # Initialize Zenoh session
         conf = zenoh.Config()
+        conf.insert_json5("adminspace", json.dumps({"enabled": True}))
+        conf.insert_json5("metadata", json.dumps({"name": "blueos-foxglove"}))
         conf.insert_json5("mode", json.dumps("client"))
         conf.insert_json5("connect/endpoints", json.dumps(["tcp/127.0.0.1:7447"]))
         self.session = zenoh.open(conf)
