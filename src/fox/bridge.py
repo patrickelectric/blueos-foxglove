@@ -1,13 +1,15 @@
 import json
 import logging
 import foxglove
+import os
 import re
 import zenoh
-from foxglove import Channel
+from foxglove import Channel, Schema
 from foxglove.channels import CompressedVideoChannel,LocationFixChannel, LogChannel
 from foxglove.schemas import LocationFix, Log, LogLevel, Timestamp, CompressedVideo
 from foxglove.websocket import Capability
 from genson import SchemaBuilder
+from pathlib import Path
 from typing import Dict, Any
 from zenoh import Session, Sample
 
@@ -125,29 +127,27 @@ class Bridge:
         try:
             topic = str(sample.key_expr)
             payload_bytes = bytes(sample.payload)
-            data = json.loads(payload_bytes.decode('utf-8'))
+            #data = json.loads(payload_bytes.decode('utf-8'))
 
-            # Create video channel if it doesn't exist
+            # read file .msg
+            # get current path of current file
+            current_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+            with open(current_dir / "msgs/CompressedVideo.msg", "r") as file:
+                schema = file.read()
+
             if topic not in self.video_channels:
-                self.video_channels[topic] = CompressedVideoChannel(topic)
+                self.video_channels[topic] = Channel(
+                    topic=topic,
+                    message_encoding="cdr",
+                    schema=Schema(
+                        name="foxglove_msgs/msg/CompressedVideo",
+                        encoding="ros2msg",
+                        data=schema.encode("utf-8")
+                    )
+                )
                 logger.info(f"Created new video channel for topic {topic}")
 
-            # Extract video data from the message
-            if "data" not in data or "format" not in data:
-                logger.warning(f"Invalid video message format for topic {topic}")
-                return
-
-            # Create CompressedImage message
-            image_msg = CompressedVideo(
-                timestamp=Timestamp(sec=int(data.get("timestamp", {}).get("sec", 0)),
-                                  nsec=int(data.get("timestamp", {}).get("nsec", 0))),
-                frame_id=data.get("frame_id", "camera"),
-                data=bytes(data["data"]),
-                format=data["format"]
-            )
-
-            # Send the video message
-            self.video_channels[topic].log(image_msg)
+            self.video_channels[topic].log(payload_bytes)
 
         except Exception as e:
             logger.error(f"Error handling video message for topic {topic}: {e}")
